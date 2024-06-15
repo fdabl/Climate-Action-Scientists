@@ -1,0 +1,7 @@
+"estimate","ci_lo","ci_hi","type","behavior","category"
+1.18600676340703,1.15074029864227,1.22263939116101,"marginal","Number of lifestyle changes","Lifestyle change"
+1.22538210381683,1.18781268091204,1.26426303558465,"background_only","Number of lifestyle changes","Lifestyle change"
+1.07531404796432,1.03358494664365,1.11657468038196,"conditional_all","Number of lifestyle changes","Lifestyle change"
+2.01219391521921,1.94194309383115,2.0865212433683,"marginal","Number of civic actions","Civic action"
+2.10145114255864,2.02122678467987,2.18361389141564,"background_only","Number of civic actions","Civic action"
+1.6100254100052,1.53392056242379,1.68887143902037,"conditional_all","Number of civic actions","Civic action"

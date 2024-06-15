@@ -1,0 +1,1079 @@
+---
+title: "Climate Action Analyses"
+author: Fabian Dablander
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+header-includes:
+   - "\\usepackage{booktabs}"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE, eval = TRUE, cache = FALSE,
+  fig.align = 'center', fig.width = 10, fig.height = 12, dpi = 300,
+  out.width='100%', out.height='100%'
+)
+```
+
+<!-- avoid border around images -->
+<style>
+    img {
+        border: 0;
+    }
+</style>
+
+# Setup
+This document runs the statistical analyses reported in the paper Dablander, F., Sachisthal, M., & Haslbeck, J.M.B. (under review). Going Beyond Research: Climate Actions by Climate and Non-Climate Researchers.
+
+```{r}
+library(brms)
+library(caret)
+library(knitr)
+library(dplyr)
+library(scales)
+library(ggplot2)
+library(forcats)
+library(corrplot)
+library(latex2exp)
+library(BayesFactor)
+library(tidyverse)
+library(qualtRics)
+library(kableExtra)
+library(RColorBrewer)
+source('../helpers.R')
+
+ptheme <- theme(
+  plot.title = element_text(hjust = .5),
+  text = element_text(size = 14),
+  legend.key = element_blank(),
+  panel.background = element_blank(),
+  legend.position = 'none',
+  axis.line.x = element_line(),
+  axis.line.y = element_line(),
+  strip.background = element_blank()
+)
+ptheme2 <- ptheme + theme(legend.position = 'bottom')
+```
+
+# Data preparation
+We load the data and create variables and categorizations that are useful for the subsequent analyses.
+
+```{r}
+dat_final <- readRDS('../data/DataS3_Final.RDS') %>% 
+  mutate(
+    engaged_protest = as.numeric(BehLegal == 2),
+    engaged_advocacy = as.numeric(Beh_EngPub == 2),
+    research_fact = factor(
+      Research_std,
+      labels = c("Not at all", "Very little", "A moderate amount", "Quite a bit", "A great deal")
+    )
+  )
+
+dat_num <- readRDS('../data/DataS1_Anonymized.RDS') %>% 
+  mutate(
+    # Natural science as reference category
+    humanities = as.numeric(
+      Field == 1 | open_field == "Humanities (e.g., History, Languages, Law)"
+    ),
+    social_science = as.numeric(
+      Field == 2 | open_field == "Social and behavioural sciences (e.g., Economics, Sociology, Psychology)"
+    ),
+    formal_science = as.numeric(
+      Field == 4 | open_field == "Formal sciences (e.g., Computer science, Logic, Mathematics)"
+    ),
+    applied_science = as.numeric(
+      Field == 5 | open_field == "Professions and applied sciences (e.g., Agriculture, Engineering)"
+    ),
+    medical_science = as.numeric(open_field == "Medical sciences"),
+    other_science = as.numeric(open_field == "Other, please specify:"),
+    
+    fieldname = case_when(
+      humanities == 1 ~ 'Humanities',
+      social_science == 1 ~ 'Social and behavioural sciences',
+      formal_science == 1 ~ 'Formal sciences',
+      applied_science == 1 ~ 'Professions and applied sciences',
+      medical_science == 1 ~ 'Medical sciences',
+      other_science == 1 ~ 'Other',
+      TRUE ~ 'Natural sciences'
+    ),
+    
+    position_name = case_when(
+      Position == 1 ~ 'PhD candidate',
+      Position == 2 ~ 'Postdoc',
+      Position == 3 ~ 'Assisstant professor',
+      Position == 4 ~ 'Associate professor',
+      Position == 5 ~ 'Full professor',
+      TRUE ~ 'Other'
+    ),
+    
+    reduced_car = as.numeric(Beh_incNotApp_1 == 2),
+    electric_vehicle = as.numeric(Beh_incNotApp_2 == 2),
+    energy_home = as.numeric(Beh_incNotApp_3 == 2),
+    fewer_children = as.numeric(Beh_incNotApp_4 == 2),
+    talk_climate = as.numeric(Beh_incNotApp_5 == 2),
+    donate_money = as.numeric(Beh_incNotApp_6 == 2),
+    veggie_diet = as.numeric(Beh_incNotApp_7 == 2),
+    reduced_flying = as.numeric(Beh_incNotApp_8 == 2),
+    
+    signed_petitions = as.numeric(Beh_others_1 == 2),
+    advocated_change = as.numeric(Beh_others_2 == 2),
+    engaged_policymakers = as.numeric(Beh_others_3 == 2),
+    wrote_letters = as.numeric(Beh_others_4 == 2),
+    engaged_disobedience = as.numeric(Beh_others_7 == 2),
+    engaged_protest = as.numeric(BehLegal == 2),
+    engaged_advocacy = as.numeric(Beh_EngPub == 2)
+  )
+    
+dat_final$position <- factor(
+  dat_num$position_name,
+  levels = c(
+    'Full professor', 'Associate professor', 'Assisstant professor',
+    'Postdoc', 'PhD candidate', 'Other'
+  )
+)
+
+dat_final$fieldname <- dat_num$fieldname
+dat_final$field <- factor(
+  dat_num$fieldname,
+  levels = c(
+    'Natural sciences', 'Social and behavioural sciences', 'Medical sciences',
+    'Formal sciences', 'Humanities', 'Professions and applied sciences', 'Other'
+  )
+)
+
+dat_final$country <- ifelse(is.na(dat_num$Country), 'not specified', dat_num$Country)
+dat_final$continent <- ifelse(is.na(dat_num$Continent), 'not specified', dat_num$Continent)
+
+dat_climate <- dat_final %>% 
+  mutate(
+    climate_researcher = as.numeric(research_fact == 'A great deal')
+  ) %>% 
+  filter(research_fact %in% c('Not at all', 'A great deal'))
+
+behaviors <- list(
+  # Civic behaviors
+  'talk_climate' = 'Talked about climate with others',
+  'donate_money' = 'Donated to climate organizations',
+  'signed_petitions' = 'Signed petitions',
+  'advocated_change' = 'Advocated change within institution',
+  'engaged_policymakers' = 'Engaged with politicians',
+  'engaged_disobedience' = 'Engaged in civil disobedience',
+  'engaged_protest' = 'Engaged in protest',
+  'engaged_advocacy' = 'Engaged in advocacy',
+  'wrote_letters' = 'Wrote letters to politicians',
+  
+  # Lifestyle behaviors
+  'reduced_flying' = 'Reduced flying',
+  'reduced_car' = 'Reduced car usage',
+  'electric_vehicle' = 'Switched to electric vehicle',
+  'energy_home' = 'Switched to renewable energy at home',
+  'veggie_diet' = 'Follows a mostly vegetarian or vegan diet',
+  'fewer_children' = 'Decided to have fewer or no children'
+)
+
+behavior_names_map <- unlist(behaviors)
+behavior_map <- list(
+  'Civic action' = names(behaviors[seq(9)]),
+  'Lifestyle change' = names(behaviors[seq(10, 15)])
+)
+```
+
+# Main analyses
+We compute the empirical proportions, used later.
+```{r, fig.height = 14}
+# Compute empirical proportions, used later
+df <- dat_final %>% 
+  group_by(Research_std) %>% 
+  summarize(across(all_of(names(behaviors)), mean)) %>% 
+  mutate(research = factor(
+    Research_std, labels = c('Not at all', 'Very little', 'A moderate amount', 'Quite a bit', 'A great deal'))
+  ) %>% 
+  select(research, everything(), -Research_std) %>% 
+  pivot_longer(cols = -research, names_to = 'behavior', values_to = 'value') %>% 
+  add_behavior_categories(behavior_map) %>% 
+  mutate(behavior = unname(unlist(behaviors[behavior])))
+```
+
+## Figure 1: Proportion of actions
+```{r}
+library(doParallel)
+library(marginaleffects)
+registerDoParallel(cores = 10)
+
+behavior_list <- names(behaviors)
+
+form <- make_form(
+  'talk_climate', random_intercept = FALSE, random_slope = FALSE,
+  binarize = TRUE, marginal = TRUE, worry = FALSE, informed = FALSE
+)
+
+filename <- '../models/climate_marginal_talk_climate.RDS'
+
+# Run one initial model so below we don't need to recompile them, but can use this one
+fit_initial_marginal <- run_model(
+  form, filename, dat_climate, use_model = NULL,
+  cores = 1, chains = 2, family = bernoulli, force = FALSE, iter = 4000, warmup = 500
+)
+
+fit_all_marginal <- foreach(i = seq(length(behaviors))) %dopar% {
+  b <- names(behaviors)[i]
+  
+  filename <- paste0('../models/climate_marginal_', b, '.RDS')
+  form <- make_form(
+    b, random_intercept = FALSE, random_slope = FALSE, binarize = TRUE,
+    marginal = TRUE, worry = FALSE, informed = FALSE
+  )
+  
+  fit <- run_model(
+    form, filename, dat_climate, use_model = fit_initial_marginal,
+    cores = 1, chains = 2, family = bernoulli, force = FALSE, iter = 4000, warmup = 500
+  )
+  
+  res <- list()
+  res[[b]] <- fit
+  res
+}
+
+df_marginal <- do.call('rbind', lapply(seq(15), function(i) {
+  fit <- fit_all_marginal[[i]]
+  behavior <- names(fit)
+  
+  get_effects(fit[[1]], behavior, type = 'marginal')
+}))
+
+df_marginal <- df_marginal %>% 
+  mutate(behavior = unname(unlist(behaviors[behavior])))
+
+df_prob_marginal <- df %>% 
+  filter(research %in% c('Not at all', 'A great deal')) %>% 
+  mutate(climate_researcher = ifelse(research == 'A great deal', 1, 0)) %>% 
+  left_join(df_marginal, by = c('behavior', 'climate_researcher'))
+
+# Order according to largest multiplicative difference
+df_prob_marginal_ord <- df_prob_marginal %>% 
+  group_by(behavior) %>% 
+  mutate(research_diff = max(estimate) / min(estimate)) %>% 
+  ungroup() %>% 
+  arrange(research_diff) %>% 
+  mutate(behavior = factor(behavior, levels = as.character(unique(behavior))))
+```
+
+```{r}
+cols <- rev(c('#a50f15', '#08519c'))
+p <- ggplot(df_prob_marginal_ord, aes(x = behavior, y = value, group = research, color = research)) +
+  geom_bar(
+    stat = 'identity', position = position_dodge(width = 0.8),
+    width = 0.70, aes(fill = research)
+  ) +
+  geom_point(
+    aes(x = behavior, y = estimate), position = position_dodge(width = 0.80),
+    size = 2, show.legend = FALSE, color = 'black'
+  ) +
+  geom_errorbar(
+    aes(ymin = ci_lo, ymax = ci_hi), position = position_dodge(width = 0.80),
+    width = 0.40, linewidth = 1, show.legend = FALSE, color = 'black'
+  ) +
+  geom_point(
+    aes(x = behavior, y = estimate), position = position_dodge(width = 0.80),
+    size = 1, show.legend = FALSE
+  ) +
+  geom_errorbar(
+    aes(ymin = ci_lo, ymax = ci_hi), position = position_dodge(width = 0.80),
+    width = 0.30, linewidth = 0.30,
+    show.legend = FALSE
+  ) +
+  theme_minimal() +
+  coord_flip() +
+  xlab('') +
+  ylab('Percent reported engaging') +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(
+    values = cols, labels = c('Non-climate researchers (n = 2,257)', 'Climate researchers (n = 1,565)')
+  ) +
+  scale_y_continuous(
+    labels = label_percent(scale = 100), limits = c(0, 1), breaks = seq(0, 1, 0.10)
+  ) +  # scale = 1 for proportions
+  ggtitle('Climate actions by climate and non-climate researchers') +
+  theme(
+    legend.position = 'top',
+    legend.title = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = .5, size = 14),
+    strip.text.x = element_text(size = 9, face = 'bold')
+  ) + guides(fill = guide_legend(reverse = TRUE), color = FALSE)
+
+p
+ggsave('../figures/Figure1.pdf', p, width = 8, height = 10)
+```
+
+# Supplemental analyses
+Here we reproduce all figures in the appendix of the paper.
+
+## Figure S1: Adjusting for background and other variables
+We fit the models using background variables and then also adding the variable how informed one perceives oneself to be on climate change (worry showed no additional effect). We also run a Bayesian binomial model that models the number of civic and lifestyle actions they engaged in overall.
+
+```{r}
+registerDoParallel(cores = 10)
+
+form <- make_form(
+  'talk_climate', random_intercept = FALSE, random_slope = FALSE,
+  binarize = TRUE, marginal = FALSE, worry = FALSE, informed = FALSE
+)
+
+filename <- '../models/climate_background_talk_climate.RDS'
+
+# Run one initial model so below we don't need to recompile them, but can use this one
+fit_initial_background <- run_model(
+  form, filename, dat_climate, use_model = NULL,
+  cores = 1, chains = 2, family = bernoulli, force = FALSE, iter = 4000, warmup = 500
+)
+
+# Condition only on background variables
+fit_all_background <- foreach(i = seq(length(behaviors))) %dopar% {
+  b <- names(behaviors)[i]
+  
+  filename <- paste0('../models/climate_background_', b, '.RDS')
+  form <- make_form(
+    b, random_intercept = FALSE, random_slope = FALSE, binarize = TRUE,
+    marginal = FALSE, worry = FALSE, informed = FALSE
+  )
+  
+  fit <- run_model(
+    form, filename, dat_climate, use_model = fit_initial_background,
+    cores = 1, chains = 2, family = bernoulli, force = FALSE, iter = 4000, warmup = 500
+  )
+  
+  res <- list()
+  res[[b]] <- fit
+  res
+}
+
+form <- make_form(
+  'talk_climate', random_intercept = FALSE, random_slope = FALSE,
+  binarize = TRUE, marginal = FALSE, worry = FALSE, informed = TRUE
+)
+
+filename <- '../models/climate_informed_talk_climate.RDS'
+
+# Run one initial model so below we don't need to recompile them, but can use this one
+fit_initial_informed <- run_model(
+  form, filename, dat_climate, use_model = NULL,
+  cores = 1, chains = 2, family = bernoulli, force = FALSE, iter = 4000, warmup = 500
+)
+
+# Condition on background variables + informed
+fit_all_informed <- foreach(i = seq(length(behaviors))) %dopar% {
+  b <- names(behaviors)[i]
+  
+  filename <- paste0('../models/climate_informed_', b, '.RDS')
+  form <- make_form(
+    b, random_intercept = FALSE, random_slope = FALSE, binarize = TRUE,
+    marginal = FALSE, worry = FALSE, informed = TRUE
+  )
+  
+  fit <- run_model(
+    form, filename, dat_climate, use_model = fit_initial_informed,
+    cores = 1, chains = 2, family = bernoulli, force = FALSE, iter = 4000, warmup = 500
+  )
+  
+  res <- list()
+  res[[b]] <- fit
+  res
+}
+```
+
+We calculate average adjusted differences between climate and non-climate researchers below. In other words, for each combination of predictor variables, we calculate the predicted difference between climate and non-climate researchers. We then average those adjusted predictions. This adjusts the difference between the climate and non-climate researchers for the predictor variables. We do not assume a balanced data set (i.e., all levels of the predictor variables being equally likely), but use the empirical distribution of the predictor variables.
+
+```{r}
+library(marginaleffects)
+
+if (!file.exists('../data/comparisons.csv')) {
+  comp_m <- get_avg_comparisons(fit_all_marginal, behaviors, type = 'marginal', cores = 8)
+  comp_b <- get_avg_comparisons(fit_all_background, behaviors, type = 'background_only', cores = 2)
+  comp_c <- get_avg_comparisons(fit_all_informed, behaviors, type = 'conditional_all', cores = 2)
+  
+  comp_all <- rbind(comp_m, comp_b, comp_c) %>% 
+    add_behavior_categories(behavior_map) %>% 
+    mutate(
+      behavior = behavior_names_map[behavior],
+      category = factor(category, levels = c('Civic action', 'Lifestyle change'))
+    )
+    
+  # Order them according to marginal model differences
+  order_comp <- comp_all %>% 
+    filter(type == 'marginal') %>% 
+    arrange(category, desc(estimate))
+  
+  comp_all$behavior <- factor(comp_all$behavior, levels = rev(order_comp$behavior))
+  comp_all$type <- factor(comp_all$type, levels = rev(c('marginal', 'background_only', 'conditional_all')))
+  write.csv(comp_all, '../data/comparisons.csv', row.names = FALSE)
+} else {
+  comp_all <- read.csv('../data/comparisons.csv')
+}
+```
+
+We model the number of civic and lifestyle actions they engaged in.
+
+```{r}
+# Marginal
+form_adv_marginal <- 'nr_advocacy_actions | trials(9) ~ climate_researcher'
+form_ls_marginal <- 'nr_lifestyle_actions | trials(6) ~ climate_researcher'
+
+background <- paste0(
+  ' + Age_std + Political_std + position + field + continent + is_tenured + is_female + is_gender_other'
+)
+
+# Background variables
+form_adv_background <- paste0(form_adv_marginal, background)
+form_ls_background <- paste0(form_ls_marginal, background)
+
+# Informed variables
+form_adv_informed <- paste0(form_adv_background, ' + Informed_std')
+form_ls_informed <- paste0(form_ls_background, ' + Informed_std')
+
+fit_ls_marginal <- run_model(
+  form_ls_marginal, '../models/climate_actions_lifestyle_marginal.RDS',
+  dat_climate, force = FALSE, cores = 4, family = binomial
+)
+
+fit_adv_marginal <- run_model(
+  form_adv_marginal, '../models/climate_actions_civic_marginal.RDS',
+  dat_climate, force = FALSE, cores = 4, family = binomial
+)
+
+fit_ls_background <- run_model(
+  form_ls_background, '../models/climate_actions_lifestyle_background.RDS',
+  dat_climate, force = FALSE, cores = 4, family = binomial
+)
+
+fit_adv_background <- run_model(
+  form_adv_background, '../models/climate_actions_civic_background.RDS',
+  dat_climate, force = FALSE, cores = 4, family = binomial
+)
+
+fit_ls_informed <- run_model(
+  form_ls_informed, '../models/climate_actions_lifestyle_informed.RDS',
+  dat_climate, force = FALSE, cores = 4, family = binomial
+)
+
+fit_adv_informed <- run_model(
+  form_adv_informed, '../models/climate_actions_civic_informed.RDS',
+  dat_climate, force = FALSE, cores = 4, family = binomial
+)
+
+if (!file.exists('../data/comparisons_binom.csv')) {
+  binom_comp <- rbind(
+    get_avg_comparisons_binom(fit_ls_marginal, 'Number of lifestyle changes', 'marginal'),
+    get_avg_comparisons_binom(fit_ls_background, 'Number of lifestyle changes', 'background_only'),
+    get_avg_comparisons_binom(fit_ls_informed, 'Number of lifestyle changes', 'conditional_all'),
+    
+    get_avg_comparisons_binom(fit_adv_marginal, 'Number of civic actions', 'marginal'),
+    get_avg_comparisons_binom(fit_adv_background, 'Number of civic actions', 'background_only'),
+    get_avg_comparisons_binom(fit_adv_informed, 'Number of civic actions', 'conditional_all')
+  ) %>% 
+    mutate(category = rep(c('Lifestyle change', 'Civic action'), each = 3))
+  
+  write.csv(binom_comp, '../data/comparisons_binom.csv', row.names = FALSE)
+} else {
+  binom_comp <- read.csv('../data/comparisons_binom.csv')
+}
+```
+
+```{r}
+# Order according to marginal model differences
+order_comp <- comp_all %>% 
+  filter(type == 'marginal') %>% 
+  arrange(category, desc(estimate))
+
+comp_all$behavior <- factor(comp_all$behavior, levels = rev(order_comp$behavior))
+comp_all$type <- factor(comp_all$type, levels = rev(c('marginal', 'background_only', 'conditional_all')))
+comp_all_combined <- rbind(comp_all, binom_comp)
+
+# Reorder to include the counts
+lev <- levels(comp_all$behavior)
+lev <- c( 'Number of lifestyle changes', lev[seq(6)], 'Number of civic actions', lev[seq(7, length(lev))])
+comp_all_combined$behavior <- factor(comp_all_combined$behavior, levels = lev)
+
+cols <- rev(c('#1F77B4', '#2CA02C', '#FC8D62'))
+p <- ggplot(comp_all_combined, aes(x = behavior, y = estimate, color = type, shape = type)) +
+  coord_flip() +
+  geom_point(
+    aes(x = behavior, y = estimate), position = position_dodge(width = 0.75),
+    size = 2, show.legend = TRUE
+  ) +
+  geom_errorbar(
+    aes(ymin = ci_lo, ymax = ci_hi), position = position_dodge(width = 0.75),
+    width = 0.75, linewidth = 0.80,
+    show.legend = TRUE
+  ) +
+  xlab('') +
+  scale_y_continuous(limits = c(0, 14), breaks = seq(0, 14, 1)) +
+  ylab('Number of times climate researchers more likely to engage in') +
+  theme_minimal() +
+  theme(legend.position = 'top') +
+  theme_minimal() +
+  ggtitle('Multiplicative differences when adjusting for variables') +
+  scale_color_manual(
+    values = cols,
+    labels = c('Background + Informed', 'Background', 'No adjustment')
+  ) +
+  scale_shape_manual(
+    values = c(15, 17, 19),
+    labels = c('Background + Informed', 'Background', 'No adjustment')
+  ) +
+  scale_y_continuous(
+    breaks = c(1, 1.25, 1.50, 2, 3, 4, 6, 8, 10, 14), trans = 'log2'
+  ) +
+  theme(
+    legend.position = 'top',
+    legend.title = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = .5, size = 14),
+    strip.text.x = element_text(size = 9, face = 'bold')
+  ) + guides(
+    shape = guide_legend(reverse = TRUE, nrow = 1),
+    color = guide_legend(reverse = TRUE, nrow = 1)
+  )
+
+p
+
+ggsave('../figures/FigureS1.pdf', p, width = 8, height = 10)
+```
+
+## Figure S2: Ordinal comparisons
+We analyze the extent to which researchers engage in climate actions depending on how related their research is to climate change. We estimate the population proportions and test the hypotheses: (a) all equal, (b) all unequal, (c) increasing proportion with research relatedness to climate. This is used for Figure S2 in the supplement.
+
+```{r, fig.height = 14}
+make_tab <- function(varname, dat_final) {
+  tab <- t(table(dat_final$Research_std, dat_final[[varname]]))
+  colnames(tab) <- c('Not at all', 'Very little', 'A moderate amount', 'Quite a bit', 'A great deal')
+  tab
+}
+
+compare_models <- function(varname, dat_final) {
+  tab <- make_tab(varname, dat_final)
+  bf <- contingencyTableBF(tab, sampleType = 'indepMulti', fixedMargin = 'cols')
+  post <- posterior(bf, iterations = 10000)
+  
+  thetas <- cbind(
+    post[, 'pi[2,1]'] / (post[, 'pi[2,1]'] + post[, 'pi[1,1]']),
+    post[, 'pi[2,2]'] / (post[, 'pi[2,2]'] + post[, 'pi[1,2]']),
+    post[, 'pi[2,3]'] / (post[, 'pi[2,3]'] + post[, 'pi[1,3]']),
+    post[, 'pi[2,4]'] / (post[, 'pi[2,4]'] + post[, 'pi[1,4]']),
+    post[, 'pi[2,5]'] / (post[, 'pi[2,5]'] + post[, 'pi[1,5]'])
+  )
+  
+  # Hr: prop1 < prop2 < prop3 < prop4 < prop5
+  ind <- (
+    thetas[, 1] < thetas[, 2] &
+    thetas[, 2] < thetas[, 3] &
+    thetas[, 3] < thetas[, 4] &
+    thetas[, 4] < thetas[, 5]
+  )
+  
+  # Posterior samples inline with the restriction versus 
+  # prior samples inline with the restriction
+  log_bfr1 <- log(mean(ind) / (1 / factorial(5)))
+  log_bf10 <- bf@bayesFactor$bf
+  log_bfr0 <- log_bfr1 + log_bf10
+  
+  list(
+    'log_bfr1' = log_bfr1, 'log_bf10' = log_bf10, 'log_bfr0' = log_bfr0,
+    'tab' = tab, 'thetas' = thetas
+  )
+}
+
+if (!file.exists('../models/df_models.RDS')) {
+  
+  bfs <- lapply(names(behaviors), function(behavior) {
+    compare_models(behavior, dat_final)
+  })
+  
+  res <- data.frame(
+    behavior = rep(names(behaviors), each = 5),
+    research = rep(unique(df$research), length(behaviors)),
+    log_bf10 = NA,
+    log_bfr0 = NA,
+    log_bfr1 = NA,
+    theta_mean = NA,
+    theta_sd = NA,
+    theta_q005 = NA,
+    theta_q995 = NA,
+    theta_ratio = NA,
+    theta_ratio_q005 = NA,
+    theta_ratio_q995 = NA
+  )
+  
+  for (i in seq(length(behaviors))) {
+    m <- bfs[[i]]
+    behavior = names(behaviors)[[i]]
+    
+    res[res$behavior == behavior, ]$log_bf10 <- m$log_bf10
+    res[res$behavior == behavior, ]$log_bfr0 <- m$log_bfr0
+    res[res$behavior == behavior, ]$log_bfr1 <- m$log_bfr1
+    res[res$behavior == behavior, ]$theta_mean <- apply(m$thetas, 2, mean)
+    res[res$behavior == behavior, ]$theta_q005 <- apply(m$thetas, 2, function(x) quantile(x, 0.005))
+    res[res$behavior == behavior, ]$theta_q995 <- apply(m$thetas, 2, function(x) quantile(x, 0.995))
+    res[res$behavior == behavior, ]$theta_sd <- apply(m$thetas, 2, sd)
+    
+    theta_ratio <- m$thetas[, 5] / m$thetas[, ]
+    res[res$behavior == behavior, ]$theta_ratio <- apply(theta_ratio, 2, mean)
+    res[res$behavior == behavior, ]$theta_ratio_q005 <- apply(theta_ratio, 2, function(x) quantile(x, 0.005))
+    res[res$behavior == behavior, ]$theta_ratio_q995 <- apply(theta_ratio, 2, function(x) quantile(x, 0.995))
+  }
+  
+  df_models <- res %>% 
+    add_behavior_categories(behavior_map) %>% 
+    filter(category != 'Academic') %>% 
+    mutate(category = factor(category, levels = c('Civic action', 'Lifestyle change'))) %>% 
+    mutate(behavior = unname(unlist(behaviors[behavior]))) %>% 
+    # get difference between min and max
+    group_by(behavior) %>% 
+    mutate(max_diff = max(theta_mean) - min(theta_mean)) %>% 
+    arrange(category, desc(max_diff))
+  
+  df_models$behavior <- factor(df_models$behavior, levels = as.character(unique(df_models$behavior)))
+  saveRDS(df_models, '../models/df_models.RDS')
+} else {
+  df_models <- readRDS('../models/df_models.RDS')
+}
+
+# Combine posterior estimates with empirical proportions
+df_models <- df_models %>%
+  left_join(
+    df %>% select(research, behavior, value),
+    by = c('research', 'behavior')
+  )
+
+df_models$behavior <- factor(df_models$behavior, levels = as.character(unique(df_models$behavior)))
+```
+
+
+```{r}
+df_models$log_bf10_label <- lapply(
+  df_models$log_bf10, function(x) as.character(TeX(paste0("$\\log \\, BF_{10}: \\,", round(x, 2), "$")))
+)
+df_models$log_bfr0_label <- lapply(
+  df_models$log_bfr0, function(x) as.character(TeX(paste0("$\\log \\, BF_{r0}: \\,", round(x, 2), "$")))
+)
+
+cols <- c('#7570B3', '#1B9E77', '#D95F02')[c(3, 2)]
+p <- ggplot(df_models, aes(x = research, y = value, fill = category)) +
+  geom_bar(stat = 'identity') +
+  geom_point(aes(x = research, y = theta_mean), color = 'black', size = 0.80, show.legend = FALSE) +
+  geom_errorbar(
+    aes(ymin = theta_q005, ymax = theta_q995), width = 0.10, linewidth = 0.50, color = 'black',
+    show.legend = FALSE
+  ) +
+  geom_text(
+    aes(x = 0.50, y = 0.95, label = log_bf10_label),
+    color = 'gray60', size = 2.5, parse = TRUE, hjust = 0
+  ) +
+  geom_text(
+    aes(x = 0.50, y = 0.80, label = log_bfr0_label),
+    color = 'gray60', size = 2.5, parse = TRUE, hjust = 0
+  ) +
+  facet_wrap(~ behavior, ncol = 3) +
+  theme_minimal() +
+  ylab('Percent reported engaging') +
+  xlab('Relatedness of research for climate change') +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = cols) +
+  scale_y_continuous(labels = label_percent(scale = 100), limits = c(0, 1)) +  # scale = 1 for proportions
+  ggtitle('Climate actions across climate change research relatedness') +
+  theme(
+    legend.position = 'top',
+    legend.title = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(hjust = .5, size = 16),
+    strip.text.x = element_text(size = 9)
+  ) +
+  guides(fill = guide_legend('category'))
+
+p
+ggsave('../figures/FigureS2.pdf', p, width = 8, height = 10)
+```
+
+## Figure S3: Climate action across research fields
+Here we show differences between climate researchers in different research fields.
+
+```{r}
+# Compute empirical proportions, used later
+df_field <- dat_final %>% 
+  mutate(
+    research = factor(
+      Research_std, labels = c('Not at all', 'Very little', 'A moderate amount', 'Quite a bit', 'A great deal')
+    )
+  ) %>% 
+  group_by(research, fieldname) %>% 
+  summarize(across(all_of(names(behaviors)), mean)) %>% 
+  pivot_longer(cols = c(-research, -fieldname), names_to = 'behavior', values_to = 'value') %>% 
+  add_behavior_categories(behavior_map) %>% 
+  mutate(behavior = unname(unlist(behaviors[behavior]))) %>% 
+  filter(
+    research == 'A great deal',
+    fieldname %in% c('Natural sciences', 'Social and behavioural sciences', 'Professions and applied sciences')
+  )
+
+df_order <- df_field %>% 
+  filter(fieldname == 'Social and behavioural sciences') %>% 
+  arrange(desc(value))
+
+df_field$behavior <- factor(df_field$behavior, levels = rev(df_order$behavior))
+df_field$fieldname <- factor(
+  df_field$fieldname,
+  levels = rev(c('Social and behavioural sciences', 'Natural sciences', 'Professions and applied sciences'))
+)
+```
+
+We estimate the proportions again for this set of data, as we did before.
+```{r}
+dat_field <- dat_final %>% 
+   mutate(
+    research = factor(
+      Research_std, labels = c('Not at all', 'Very little', 'A moderate amount', 'Quite a bit', 'A great deal')
+    )
+  ) %>% 
+  filter(
+    research == 'A great deal',
+    fieldname %in% c('Social and behavioural sciences', 'Natural sciences', 'Professions and applied sciences')
+  )
+
+make_tab <- function(varname, dat_final) {
+  tab <- t(table(dat_final$fieldname, dat_final[[varname]]))
+  tab
+}
+
+compare_models <- function(varname, dat_final) {
+  tab <- make_tab(varname, dat_final)
+  bf <- contingencyTableBF(tab, sampleType = 'indepMulti', fixedMargin = 'cols')
+  log_bf10 <- bf@bayesFactor$bf
+  post <- posterior(bf, iterations = 10000)
+  
+  thetas <- cbind(
+    post[, 'pi[2,1]'] / (post[, 'pi[2,1]'] + post[, 'pi[1,1]']),
+    post[, 'pi[2,2]'] / (post[, 'pi[2,2]'] + post[, 'pi[1,2]']),
+    post[, 'pi[2,3]'] / (post[, 'pi[2,3]'] + post[, 'pi[1,3]'])
+  )
+  
+  list(
+    'log_bf10' = log_bf10, 'thetas' = thetas
+  )
+}
+
+if (!file.exists('../models/df_models_field.RDS')) {
+  
+  bfs <- lapply(names(behaviors), function(behavior) {
+    compare_models(behavior, dat_field)
+  })
+  
+  res <- data.frame(
+    behavior = rep(names(behaviors), each = 3),
+    fieldname = rep(unique(dat_field$fieldname), length(behaviors)),
+    log_bf10 = NA,
+    theta_mean = NA,
+    theta_sd = NA,
+    theta_q005 = NA,
+    theta_q995 = NA,
+    theta_ratio = NA,
+    theta_ratio_q005 = NA,
+    theta_ratio_q995 = NA
+  )
+  
+  for (i in seq(length(behaviors))) {
+    m <- bfs[[i]]
+    behavior <- names(behaviors)[[i]]
+    
+    res[res$behavior == behavior, ]$log_bf10 <- m$log_bf10
+    res[res$behavior == behavior, ]$theta_mean <- apply(m$thetas, 2, mean)
+    res[res$behavior == behavior, ]$theta_q005 <- apply(m$thetas, 2, function(x) quantile(x, 0.005))
+    res[res$behavior == behavior, ]$theta_q995 <- apply(m$thetas, 2, function(x) quantile(x, 0.995))
+    res[res$behavior == behavior, ]$theta_sd <- apply(m$thetas, 2, sd)
+    
+    theta_ratio <- m$thetas[, 3] / m$thetas[, ]
+    res[res$behavior == behavior, ]$theta_ratio <- apply(theta_ratio, 2, mean)
+    res[res$behavior == behavior, ]$theta_ratio_q005 <- apply(theta_ratio, 2, function(x) quantile(x, 0.005))
+    res[res$behavior == behavior, ]$theta_ratio_q995 <- apply(theta_ratio, 2, function(x) quantile(x, 0.995))
+  }
+  
+  df_models_field <- res %>% 
+    add_behavior_categories(behavior_map) %>% 
+    filter(category != 'Academic') %>% 
+    mutate(category = factor(category, levels = c('Civic action', 'Lifestyle change'))) %>% 
+    mutate(behavior = unname(unlist(behaviors[behavior]))) %>% 
+    arrange(category, desc(theta_mean))
+  
+  df_order <- df_models_field %>% 
+    filter(fieldname == 'Social and behavioural sciences') %>% 
+    arrange(desc(theta_mean))
+  
+  df_models_field$behavior <- factor(
+    df_models_field$behavior, levels = rev(as.character(unique(df_order$behavior)))
+  )
+  df_models_field$fieldname <- factor(
+    df_models_field$fieldname,
+    levels = rev(c('Social and behavioural sciences', 'Natural sciences', 'Professions and applied sciences'))
+  )
+  saveRDS(df_models_field, '../models/df_models_field.RDS')
+} else {
+  df_models_field <- readRDS('../models/df_models_field.RDS')
+}
+
+# Combine posterior estimates with empirical proportions
+df_models_field <- df_models_field %>%
+  left_join(
+    df_field %>% select(fieldname, behavior, value),
+    by = c('fieldname', 'behavior')
+  )
+```
+
+```{r}
+cols <- rev(c('#1F77B4', '#2CA02C', '#FC8D62'))
+p <- ggplot(df_models_field, aes(x = behavior, y = value, fill = fieldname, color = fieldname)) +
+  geom_bar(
+    stat = 'identity', position = position_dodge(width = 0.8),
+    width = 0.70, aes(fill = fieldname)
+  ) +
+  geom_point(
+    aes(x = behavior, y = theta_mean), position = position_dodge(width = 0.80),
+    size = 2, show.legend = FALSE, color = 'black'
+  ) +
+  geom_errorbar(
+    aes(ymin = theta_q005, ymax = theta_q995), position = position_dodge(width = 0.80),
+    width = 0.40, linewidth = 1, show.legend = FALSE, color = 'black'
+  ) +
+  geom_point(
+    aes(x = behavior, y = theta_mean), position = position_dodge(width = 0.80),
+    size = 1, show.legend = FALSE
+  ) +
+  geom_errorbar(
+    aes(ymin = theta_q005, ymax = theta_q995), position = position_dodge(width = 0.80),
+    width = 0.30, linewidth = 0.30,
+    show.legend = FALSE
+  ) +
+  theme_minimal() +
+  coord_flip() +
+  xlab('') +
+  ylab('Percent reported engaging') +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(
+    values = cols,
+    labels = rev(
+      c('Social and behavioural sciences (n = 341)',
+        'Natural sciences (n = 716)',
+        'Professions and applied sciences (n = 392)')
+    )
+  ) +
+  scale_y_continuous(
+    labels = label_percent(scale = 100), limits = c(0, 1), breaks = seq(0, 1, 0.10)
+  ) +  # scale = 1 for proportions
+  ggtitle('Climate actions by climate researchers in different fields') +
+  theme(
+    legend.position = 'top',
+    legend.title = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = .5, size = 14),
+    strip.text.x = element_text(size = 9, face = 'bold')
+  ) + guides(fill = guide_legend(reverse = TRUE, nrow = 3), color = FALSE)
+
+p
+ggsave('../figures/FigureS3.pdf', p, width = 8, height = 10)
+```
+
+
+## Figure S4: Correlation between actions
+We compute correlations between all actions (as well as self-reported carbon-intensity of lifestyle and political orientation).
+
+```{r}
+library(corrplot)
+library(doParallel)
+registerDoParallel(cores = 8)
+
+varnames <- c(names(behavior_names_map), 'Lifestyle_std', 'Political_std')
+dat_cor <- dat_final %>% select(varnames)
+
+p <- length(varnames)
+corr_all <- get_cors(dat_cor, '../models/action_correlations_all.RDS')
+```
+
+```{r, fig.width = 14, fig.height = 14}
+varmap <- c(
+  behavior_names_map,
+  'Lifestyle_std' = 'Carbon-intensity of lifestyle',
+  'Political_std' = 'Political orientation'
+)
+
+cor_mat <- corr_all$cor_mat
+rownames(cor_mat) <- colnames(cor_mat) <- varmap[colnames(cor_mat)]
+diag(cor_mat) <- 0
+
+# Reorient like the other figures
+cor_order <- c(levels(df_models$behavior), 'Carbon-intensity of lifestyle', 'Political orientation')
+cor_mat <- cor_mat[cor_order, cor_order]
+diag(cor_mat) <- NA
+
+pdf('../figures/FigureS4.pdf', width = 8, height = 8)
+corrplot(
+  cor_mat, method = 'color', type = 'upper', number.cex = 0.60,
+  addCoef.col = 'black',
+  tl.cex = 0.80, addrect = 20, tl.col = 'black',
+  na.label = ' '
+)
+dev.off()
+```
+
+```{r}
+corrplot(
+  cor_mat, method = 'color', type = 'upper', number.cex = 0.60,
+  addCoef.col = 'black',
+  tl.cex = 0.80, addrect = 20, tl.col = 'black',
+  na.label = ' '
+)
+```
+
+## Table S1 & S2: Descriptive statistics
+Here we show descriptive statistics of a number of background variables.
+
+```{r}
+age_labels <- c('18 - 24 years', '25-34 years', '35-44 years', '45-54 years', '55-64 years', '65+ years')
+gender_labels <- c('Male', 'Female', 'Non-binary', 'Prefer to self-describe', 'Prefer not to say')
+field_labels <- c(
+  'Social and behavioural sciences', 'Natural sciences', 'Medical sciences',
+  'Professions and applied sciences', 'Formal sciences', 'Humanities', 'Other'
+)
+position_labels <- c(
+  'PhD candidate', 'Postdoc', 'Assisstant professor',
+  'Associate professor', 'Full professor',
+  'Scientist or researcher in industry',
+  'Scientist or researcher at a public research institute',
+  'Scientist or researcher at a non-profit organization',
+  'Other'
+)
+political_labels <- c('1', '2', '3', '4', '5', '6', '7')
+carbon_labels <- c('Much lower', 'Lower', 'About the same', 'Higher', 'Much higher')
+continent_labels <- c('Europe', 'North America', 'South America', 'Asia', 'Africa', 'Oceania')
+
+dat_descr <- dat_num %>% 
+  filter(Research %in% c(1, 5)) %>% 
+  mutate(
+    Age = factor(Age, labels = age_labels),
+    Gender = factor(Gender, labels = gender_labels),
+    fieldname = factor(fieldname, levels = field_labels),
+    Position = factor(Position, labels = position_labels),
+    Political = factor(Political, labels = political_labels),
+    Research = factor(Research, labels = c('Non-climate researchers', 'Climate researchers')),
+    Continent = factor(Continent, levels = continent_labels),
+    Lifestyle = factor(Lifestyle, labels = carbon_labels)
+  )
+
+dat_age <- dat_descr %>% 
+  group_by(Research, Age) %>% 
+  summarize(n_age = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_age = 100 * round(n_age / sum(n_age), 2)) %>% 
+  mutate(final_age = paste0(n_age, ' (', prop_age, '%)')) %>% 
+  select(Research, Age, final_age)
+
+dat_gender <- dat_descr %>% 
+  group_by(Research, Gender) %>% 
+  summarize(n_gender = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_gender = 100 * round(n_gender / sum(n_gender), 2)) %>% 
+  mutate(final_gender = paste0(n_gender, ' (', prop_gender, '%)')) %>% 
+  select(Research, Gender, final_gender)
+
+dat_field <- dat_descr %>% 
+  select(-Field) %>% 
+  rename(Field = fieldname) %>% 
+  group_by(Research, Field) %>% 
+  summarize(n_field = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_field = 100 * round(n_field / sum(n_field), 2)) %>% 
+  mutate(final_field = paste0(n_field, ' (', prop_field, '%)')) %>% 
+  select(Research, Field, final_field)
+
+dat_pos <- dat_descr %>% 
+  group_by(Research, Position) %>% 
+  summarize(n_pos = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_pos = 100 * round(n_pos / sum(n_pos), 2)) %>% 
+  mutate(final_pos = paste0(n_pos, ' (', prop_pos, '%)')) %>% 
+  select(Research, Position, final_pos)
+
+dat_pol <- dat_descr %>% 
+  group_by(Research, Political) %>% 
+  summarize(n_pol = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_pol = 100 * round(n_pol / sum(n_pol), 2)) %>% 
+  mutate(final_pol = paste0(n_pol, ' (', prop_pol, '%)')) %>% 
+  select(Research, Political, final_pol)
+
+dat_cont <- dat_descr %>% 
+  group_by(Research, Continent) %>% 
+  summarize(n_cont = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_cont = 100 * round(n_cont / sum(n_cont), 2)) %>% 
+  mutate(final_cont = paste0(n_cont, ' (', prop_cont, '%)')) %>% 
+  select(Research, Continent, final_cont)
+
+dat_ls <- dat_descr %>% 
+  group_by(Research, Lifestyle) %>% 
+  summarize(n_ls = n()) %>% 
+  group_by(Research) %>% 
+  mutate(prop_ls = 100 * round(n_ls / sum(n_ls), 2)) %>% 
+  mutate(final_ls = paste0(n_ls, ' (', prop_ls, '%)')) %>% 
+  select(Research, Lifestyle, final_ls)
+
+prep <- function(df, value) {
+  df <- df %>% 
+    spread(key = 'Research', value = value)
+  varname <- colnames(df)[1]
+  df$Variable <- varname
+  colnames(df) <- c('Variablename', colnames(df)[-1])
+  df %>% 
+    select(Variable, Variablename, everything())
+}
+
+df_all <- bind_rows(
+  prep(dat_age, 'final_age'),
+  prep(dat_gender, 'final_gender'),
+  prep(dat_cont, 'final_cont'),
+  prep(dat_field, 'final_field'),
+  prep(dat_pos, 'final_pos'),
+  prep(dat_pol, 'final_pol'),
+  prep(dat_ls, 'final_ls')
+)
+
+kable_df <- kable(df_all, format = 'latex', booktabs = TRUE)
+print(kable_df)
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
