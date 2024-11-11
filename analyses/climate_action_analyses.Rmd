@@ -26,7 +26,7 @@ knitr::opts_chunk$set(
 </style>
 
 # Setup
-This document runs the statistical analyses reported in the paper Dablander, F., Sachisthal, M., & Haslbeck, J.M.B. (under review). Going Beyond Research: Climate Actions by Climate and Non-Climate Researchers.
+This document runs the statistical analyses reported in the paper Dablander, F., Sachisthal, M., & Haslbeck, J.M.B. (accepted). Climate Actions by Climate and Non-Climate Researchers. *npj Climate Action*.
 
 ```{r}
 library(brms)
