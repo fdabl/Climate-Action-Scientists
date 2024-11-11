@@ -4,7 +4,7 @@ This repository contains code to reproduce all analyses and figures for the pape
 - `helpers.R` includes useful functions.
 - `analyses/`
     - `climate_action_analyses.Rmd` runs the analyses reported in the paper.
-    - `climate_action_analyses.hmlt` output of the above.
+    - `climate_action_analyses.html` output of the above.
 - `data/`
     - `DataS1_Anonymized.RDS` is the raw anonymized data.
     - `DataS2_Imputed.RDS` is the imputed data.
